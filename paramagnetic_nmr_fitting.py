@@ -160,37 +160,53 @@ def print_fit_vals(model_result, comp_names):
         print('comp{}=\\'.format(i))
         pprint.pprint(comp)
 
-def fit_T2(L1_data, intensity_data, spin_rate, labels=None, normalize=False):
+def fit_T2(save_dir, save_name, L1_data, intensity_data, spin_rate, labels=None, normalize=False,
+    show_plot=True, colors=['red', 'blue', 'green']):
     """
     DESCRIPTION:  Given rotor delay and intensity data for a T2 experiment, extract out the T2 time constant in ms
     PARAMETERS:  
-        L1: array of arrays
+        save_dir: string
+            Directory to save plot figure
+        save_name: string
+            Figure save file name
+        L1_data: array of arrays
             List of of rotor delay data each acquistion was run at, for each resonance, i.e. [L1_para, L1_dia],
-            where L1_para = [1,2,3,4,5,6,7,8,10,20,30,40,50,60,70,80]
-        intensity: array of arrays
-            List of the intensity values extracted from an environment after fitting the spectra, for each resonance
+            where L1_para = L2_para = [1,2,3,4,5,6,7,8,10,20,30,40,50,60,70,80]
+        intensity_data: array of arrays
+            List of the intensity values extracted from a component/ group of components after fitting the spectra
         spin_rate: integer
             The MAS spin rate of the rotor, in Hz
-    RETURNS: float
-        The T2 constant, in milliseconds
+        labels: array of strings
+            Label names for each component/ group of components
+        normalize: boolean
+            Whether or not to normalize the plot values.
+    RETURNS: [T2_list, unscaled_percentages, scaled_percentages]
+        T2_list: array of floats
+            list of T2 constants corresponding to each component/ group of components specified in intensity_data, index-matched
+        unscaled_percentages: array of floats
+            list of unscaled molar percentages of each component/ group of components specified in intensity_data, index-matched
+        scaled_percentages: array of floats
+            list of T2 scaled molar percentages of each component/ group of components specified in intensity_data, index-matched
     """
     plt, ax = format_plot(
         fig_size=(8,8),
     )
-    colors= ['red', 'blue', 'green']
     extracted_intensities = []
     initial_intensities = []
     label_list = []
     T2_list = []
-    print('L1_data: {}'.format(L1_data))
-    print('intensity_data: {}'.format(intensity_data))
-    print('labels: {}'.format(labels))
+    # print('L1_data: {}'.format(L1_data))
+    # print('intensity_data: {}'.format(intensity_data))
+    # print('labels: {}'.format(labels))
+    norm_factor = [intensity[0] for intensity in intensity_data]
     for i in range(len(L1_data)):
         L1 = np.array(L1_data[i])
         intensity = np.array(intensity_data[i])
         if normalize:
+            initial_intensities.append(intensity[0])
             intensity = intensity / intensity[0]
-        initial_intensities.append(intensity[0])
+        else:
+            initial_intensities.append(intensity[0])
         # converting L1 to delay time, in milliseconds
         time = 2/spin_rate*L1*1000
         popt, pcov = curve_fit(T2_decay_func, time, intensity, p0=[time[0], intensity[0]])
@@ -199,7 +215,13 @@ def fit_T2(L1_data, intensity_data, spin_rate, labels=None, normalize=False):
         std_dev = np.sqrt(np.diag(pcov))
         T2_std_dev = std_dev[0]
         init_intensity_std_dev = std_dev[1]
-        extracted_intensities.append(init_intensity)
+        if normalize:
+            abs_init_intensity = init_intensity*norm_factor[i]
+            abs_init_intensity_std_dev = init_intensity_std_dev*norm_factor[i]
+        else:
+            abs_init_intensity = init_intensity
+            abs_init_intensity_std_dev = init_intensity_std_dev
+        extracted_intensities.append(abs_init_intensity)
         T2_list.append(T2)
         if not labels:
             label = 'Feature {}'.format(i)
@@ -207,45 +229,102 @@ def fit_T2(L1_data, intensity_data, spin_rate, labels=None, normalize=False):
             label = labels[i]
         label_list.append(label)
         print('-----------------------------------------------')
-        print(label)
+        print('*****{} fitting results*****'.format(label))
+        print('-----------------------------------------------')
         print('T2 constant: {} ms'.format(np.round(T2, 4)))
         print('T2 constant std dev: {}'.format(np.round(T2_std_dev, 4)))
-        print('Initial intensity: {}'.format(np.round(init_intensity, 0)))
-        print('Initial intensity std dev: {}'.format(np.round(init_intensity_std_dev, 0)))
+        print('Initial intensity: {}'.format(np.round(abs_init_intensity, 0)))
+        print('Initial intensity std dev: {}'.format(np.round(abs_init_intensity_std_dev, 0)))
         plt.plot(time, intensity, 'o', color=colors[i], label=label)
         plt.plot(time, T2_decay_func(time, T2, init_intensity), '-', color='black')
     print('-----------------------------------------------')
-    exp_quant = initial_intensities[0]/sum(initial_intensities)*100
-    T2_scaled_quant = extracted_intensities[0]/sum(extracted_intensities)*100
-    diff = exp_quant - T2_scaled_quant
-    print('Experimental {} quantification: {}%'.format(label_list[0], np.round(exp_quant, 3)))
-    print('T2 scaled {} quantification: {}%'.format(label_list[0], np.round(T2_scaled_quant, 3)))
+    print('*****scaled intensity results*****'.format(label))
+    print('-----------------------------------------------')
+    unscaled_percentages = [intensity/sum(initial_intensities)*100 for intensity in initial_intensities]
+    scaled_percentages = [intensity/sum(extracted_intensities)*100 for intensity in extracted_intensities]*100
+    for i in range(len(L1_data)):
+        print('Unscaled {} quantification: {}%'.format(label_list[i], np.round(unscaled_percentages[i], 3)))
+        print('T2 scaled {} quantification: {}%'.format(label_list[i], np.round(scaled_percentages[i], 3)))
     plt.xlabel('Time (ms)')
     if normalize:
         plt.ylabel('Normalized Intensity (a.u.)')
     else:
         plt.ylabel('Intensity (a.u.)')
-    plt.legend(prop={'size': 12}, frameon=False).set_draggable(True)
-    plt.show()
+    plt.legend(prop={'size': 22}, frameon=False).set_draggable(True)
+    plt.savefig(save_dir + save_name + '.png')
+    if show_plot:
+        plt.show()
     plt.close()
-    return T2_list
+    return [T2_list, unscaled_percentages, scaled_percentages]
 
 def T2_decay_func(time, T2, init_intensity):
     #fit T2 and init_intensity
     return init_intensity*np.exp(-1*time/T2)
 
-def fit_T2_spectra(data_files, rotor_periods, fit_range, components_list, comp_constraints, comp_names, normalize=False,
+def fit_T2_spectra(data_files, rotor_periods, fit_range, components_list, comp_constraints, comp_names, normalize=False, 
         comp_groups=[], group_names=[],
         fit_ssb=False, ssb_list=[], mas_freq=60000,
         print_results=True, show_plot=True, plot_init_fit=True, show_lgd=True, lgd_loc=0, lgd_fsize=22, save_dir='', fig_save_dir='',
-        data_color='black', fit_color='red', init_fit_color='green', comp_colors=['blue', 'red']):
+        data_color='black', fit_color='red', init_fit_color='green', comp_colors=['blue', 'red'],):
+    """
+    DESCRIPTION:  Given a set of T2 relaxation data, automatically fit all spectra, and extract of T2 constants and
+                  scaled intensity values for all components
+    PARAMETERS:  
+        data_files: list of strings
+            List of files containing T2 relaxation experiments, with varying interpulse delays
+        rotor periods: array of integers
+            List of rotor delays for each of the spectra in data_files, index-matched
+        normalize: boolean
+            Whether or not to normalize the plot for T2 intensity decay
+        **kwargs: key-word arguments
+            key-word arguments corresponding to the 'fit' function. See 'fit' function for details
+    RETURNS: [T2_list, unscaled_percentages, scaled_percentages]
+        T2_list: array of floats
+            list of T2 constants (in ms) corresponding to each component/ group of components specified in intensity_data, index-matched
+        unscaled_percentages: array of floats
+            list of unscaled molar percentages of each component/ group of components specified in intensity_data, index-matched
+        scaled_percentages: array of floats
+            list of T2 scaled molar percentages of each component/ group of components specified in intensity_data, index-matched
+    """
     amplitudes = []
+    save_name = os.path.splitext(os.path.basename(data_files[0]))[0].replace('.txt', '')
+    comp_group_index = []
+    comp_labels = []
+    plt, ax = format_plot(
+        fig_size=(8,8),
+    )
+    for comp_name in comp_names:
+        assigned_group = False
+        for i, group in enumerate(comp_groups):
+            if comp_name in group:
+                comp_group_index.append(i)
+                assigned_group = True
+                if group_names[i] not in comp_labels:
+                    comp_labels.append(group_names[i])
+                else:
+                    comp_labels.append(None)
+        if not assigned_group:
+            comp_group_index.append(-1)
+            comp_labels.append(comp_name)
+    # assigning colors to components
+    colors = []
+    default_colors = []
+    for index in comp_group_index:
+        if index != -1:
+            colors.append(comp_colors[index])
+        else:
+            color = next(ax._get_lines.prop_cycler)['color']
+            colors.append(color)
+            default_colors.append(color)
     if len(comp_groups) > 0:
         for i in range(len(comp_groups)):
             amplitudes.append([])
     else:
-        for i in len(components_list):
+        for i in range(len(components_list)):
             amplitudes.append([])
+    if len(comp_groups) > 0:
+        colors = comp_colors
+    plt.close()
     for data_file in data_files:
         freq_ppm_data, intensity_data, model_result, groupless_amplitudes, group_amplitudes= \
         fit(data_file, fit_range, components_list, comp_constraints, comp_names,
@@ -265,10 +344,18 @@ def fit_T2_spectra(data_files, rotor_periods, fit_range, components_list, comp_c
     else: 
         rotor_period_data = len(components_list)*[rotor_periods]
         labels = comp_names
-    
-    T2_list = fit_T2(rotor_period_data, amplitudes, mas_freq, labels, normalize)
-    return T2_list
-
+    T2_list, unscaled_percentages, scaled_percentages = fit_T2(
+        save_dir=fig_save_dir,
+        save_name=save_name,
+        L1_data=rotor_period_data,
+        intensity_data=amplitudes,
+        spin_rate=mas_freq,
+        labels=labels,
+        normalize=normalize,
+        colors=colors,
+        show_plot=True
+    )
+    return [T2_list, unscaled_percentages, scaled_percentages]
 def fit(data_file, fit_range, components_list, comp_constraints, comp_names, comp_groups=[], group_names=[],
         fit_ssb=False, ssb_list=[], mas_freq=60000,
         print_results=True, show_plot=True, plot_init_fit=True, show_lgd=True, lgd_loc=0, lgd_fsize=22, save_dir='', fig_save_dir='',
@@ -638,45 +725,45 @@ constraints = [comp0_constraints, comp0_constraints, comp0_constraints, comp0_co
 
 rotor_periods = [1,2,3,4,5,6,7,8,10,20,30,40,50,60,70,80]
 files = ['{}MnTiF0.1-B03-S01-7Li-T2-{}.txt'.format(data_dir, x) for x in rotor_periods]
-fit_T2_spectra(
-    data_files=files,
-    rotor_periods=rotor_periods,
-    normalize=True,
-    fit_range=(4000, -4000),
-    components_list=components,
-    comp_constraints=constraints,
-    comp_names=comp_names,
-    comp_groups = comp_groups,
-    group_names = group_names,
-    fit_ssb=True,
-    ssb_list=[2, 1, -1, -2],
-    mas_freq=60000,
-    plot_init_fit=True,
-    comp_colors=['blue', 'red'],
-    save_dir=save_dir,
-    fig_save_dir=fig_save_dir,
-    show_plot=False,
-    print_results=False
-)
-# for file in files:
-#     fit(
-#         data_file=file,
-#         fit_range=(4000, -4000),
-#         components_list=components,
-#         comp_constraints=constraints,
-#         comp_names=comp_names,
-#         comp_groups = comp_groups,
-#         group_names = group_names,
-#         fit_ssb=True,   
-#         ssb_list=[2, 1, -1, -2],
-#         mas_freq=60000,
-#         plot_init_fit=True,
-#         comp_colors=['blue', 'red'],
-#         save_dir=save_dir,
-#         fig_save_dir=fig_save_dir,
-#         show_plot=False,
-#         print_results=False
-#     )
+# fit_T2_spectra(
+#     data_files=files,
+#     rotor_periods=rotor_periods,
+#     normalize=True,
+#     fit_range=(4000, -4000),
+#     components_list=components,
+#     comp_constraints=constraints,
+#     comp_names=comp_names,
+#     comp_groups = comp_groups,
+#     group_names = group_names,
+#     fit_ssb=True,
+#     ssb_list=[2, 1, -1, -2],
+#     mas_freq=60000,
+#     plot_init_fit=True,
+#     comp_colors=['blue', 'red'],
+#     save_dir=save_dir,
+#     fig_save_dir=fig_save_dir,
+#     show_plot=False,
+#     print_results=False
+# )
+for file in files:
+    fit(
+        data_file=file,
+        fit_range=(4000, -4000),
+        components_list=components,
+        comp_constraints=constraints,
+        comp_names=comp_names,
+        comp_groups = comp_groups,
+        group_names = group_names,
+        fit_ssb=True,   
+        ssb_list=[2, 1, -1, -2],
+        mas_freq=60000,
+        plot_init_fit=True,
+        comp_colors=['blue', 'red'],
+        save_dir=save_dir,
+        fig_save_dir=fig_save_dir,
+        show_plot=True,
+        print_results=True
+    )
 # fit(
 #     data_file=files[1],
 #     fit_range=(4000, -4000),
