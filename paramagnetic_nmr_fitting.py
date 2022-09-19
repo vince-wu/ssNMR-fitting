@@ -1,6 +1,10 @@
+from re import T
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import os
+from scipy.optimize import curve_fit 
+import copy
 
 from lmfit import Parameters
 from lmfit.models import ExponentialModel, GaussianModel, PseudoVoigtModel
@@ -10,19 +14,22 @@ from formatting import format_plot
 
 data_dir = 'c:/Users/Vincent/Box/Clement Research/NMR/raw xy data/'
 save_dir = 'c:/Users/Vincent/Box/Clement Research/NMR/fit summaries/'
+fig_save_dir = 'c:/Users/Vincent/Box/Clement Research/NMR/spectra plots/'
 def simple_parse_data(data_path):
     """
     DESCRIPTION: Parses a .txt file containing NMR spectra with frequency and intensity data and returns two arrays for each data column
     PARAMETERS: 
         data_path: path-like string
             the path to the raw .txt file
-    RETURNS: [intensity, freq_ppm, freq_Hz, freq_ppm, nuclei, experiment, exp_name]
+    RETURNS: [intensity, freq_Hz, freq_ppm, larmor_freq]
         intensity: numpy array
             a numpy array containing intensity data
         freq_Hz: numpy array
             a numpy array containing frequency data in Hz
         freq_ppm: numpy array
             a numpy array containing frequency data in freq_ppm
+        larmor_freq: float
+            the larmor frequency, calculated by dividing freq_Hz by freq_ppm
     """    
     # data starts on line 1, may need to change this!
     start_line = 1
@@ -35,10 +42,11 @@ def simple_parse_data(data_path):
     # print(intensity)
     return [intensity, freq_Hz, freq_ppm, larmor_freq]
 
-def generate_summary(model_result, comp_names, comp_groups, group_names, fit_ssb, ssb_list, ssb_comp_names):
+def generate_summary(model_result, comp_names, comp_groups, group_names, ssb_comp_names, save_dir, base_file_name):
     fit_vals_dict = model_result.best_values
     component_df = pd.DataFrame(columns=['component(s)', 'group', 'relative %', 'amplitude','center','sigma','fraction', 'fwhm','height'])
-    comp_names = comp_names.copy()
+    # print('comp groups: ', comp_groups)
+    new_comp_names = []
     comp_amplitudes = []
     comp_centers = []
     comp_sigmas = []
@@ -54,6 +62,7 @@ def generate_summary(model_result, comp_names, comp_groups, group_names, fit_ssb
         fraction = fit_vals_dict['{}{}'.format(prefix, 'fraction')]
         fwhm = 2*sigma
         height = (((1-fraction)*amplitude)/max(1e-15, (sigma*np.sqrt(np.pi/np.log(2))))+(fraction*amplitude)/max(1e-15, (np.pi*sigma)))
+        new_comp_names.append(comp_name)
         comp_group_names.append('n/a')
         comp_amplitudes.append(amplitude)
         comp_centers.append(center)
@@ -69,7 +78,7 @@ def generate_summary(model_result, comp_names, comp_groups, group_names, fit_ssb
             fraction = fit_vals_dict['{}{}'.format(ssb_comp_name, 'fraction')]
             fwhm = 2*sigma
             height = (((1-fraction)*amplitude)/max(1e-15, (sigma*np.sqrt(np.pi/np.log(2))))+(fraction*amplitude)/max(1e-15, (np.pi*sigma)))
-            comp_names.append(ssb_comp_name.rstrip('_'))
+            new_comp_names.append(ssb_comp_name.rstrip('_'))
             comp_group_names.append('n/a')
             comp_amplitudes.append(amplitude)
             comp_centers.append(center)
@@ -80,18 +89,23 @@ def generate_summary(model_result, comp_names, comp_groups, group_names, fit_ssb
     comp_relative_amps = [100*x/sum(comp_amplitudes) for x in comp_amplitudes]
     comp_group_amplitudes = []
     original_comp_groups = comp_groups.copy()
+    new_comp_groups = copy.deepcopy(comp_groups)
     original_comp_group_names = comp_group_names.copy()
     if len(ssb_comp_names) > 0:
         for ssb_comp_name in ssb_comp_names:
             for i, original_comp_group_names in enumerate(original_comp_groups):
                 if any(name in ssb_comp_name for name in original_comp_group_names):
-                    comp_groups[i].append(ssb_comp_name)
+                    new_comp_groups[i].append(ssb_comp_name)
+    # print('comp groups3: ', comp_groups)
     # print('comp_groups: ', comp_groups)
     # print('group names: ', group_names)
     # print('comp_group_names: ', comp_group_names)
-    # print('comp names: ', comp_names)
+    # print('comp names: ', new_comp_names)
     # print(len(comp_groups))
-    for group, name in zip(comp_groups, group_names):
+    groupless_comp_amps = comp_amplitudes.copy()
+    # print('new comp groups: ', new_comp_groups)
+    # print('group names: ', group_names)
+    for group, name in zip(new_comp_groups, group_names):
         total_amplitude = 0
         iso_amplitudes = []
         centers = []
@@ -99,15 +113,15 @@ def generate_summary(model_result, comp_names, comp_groups, group_names, fit_ssb
         for comp in group:
             comps += '{} '.format(comp)
             # getting center data, just for isotropic peaks
-            for i in range(len(comp_names)):
-                if comp == comp_names[i]:
+            for i in range(len(new_comp_names)):
+                if comp == new_comp_names[i]:
                     iso_amplitude = comp_amplitudes[i]
                     center = comp_centers[i]
                     iso_amplitudes.append(iso_amplitude)
                     centers.append(center)
             # getting amplitude data for all peaks
-            for i in range(len(comp_names)):
-                if comp.rstrip('_') == comp_names[i]:
+            for i in range(len(new_comp_names)):
+                if comp.rstrip('_') == new_comp_names[i]:
                     amplitude = comp_amplitudes[i]
                     total_amplitude += amplitude
         # print('iso_amplitudes: ', iso_amplitudes)
@@ -119,17 +133,19 @@ def generate_summary(model_result, comp_names, comp_groups, group_names, fit_ssb
         comp_centers.append(mean_center)
         comp_group_amplitudes.append(total_amplitude)
         comp_group_names.append(name)
-        comp_names.append(comps)
+        new_comp_names.append(comps)
+    # print('new comp names: ', new_comp_names)
     group_relative_amps = [100*x/sum(comp_amplitudes) for x in comp_group_amplitudes]
     [comp_amplitudes.append(x) for x in comp_group_amplitudes]
     [comp_relative_amps.append(x) for x in group_relative_amps]
-    comp_data = [comp_names, comp_group_names, comp_relative_amps, comp_amplitudes, comp_centers, comp_sigmas, comp_fractions, 
+    comp_data = [new_comp_names, comp_group_names, comp_relative_amps, comp_amplitudes, comp_centers, comp_sigmas, comp_fractions, 
     comp_fwhms, comp_heights]
     for name, data in zip(list(component_df.columns), comp_data):
         # print(data)
         component_df[name] = data
         # print('added {}'.format(name))
-    component_df.to_csv(save_dir + 'fit.csv')
+    component_df.to_csv(save_dir + base_file_name + '.csv')
+    return [groupless_comp_amps, comp_group_amplitudes]
 
 def print_fit_vals(model_result, comp_names):
     fit_vals_dict = model_result.best_values
@@ -144,12 +160,232 @@ def print_fit_vals(model_result, comp_names):
         print('comp{}=\\'.format(i))
         pprint.pprint(comp)
 
-def fit(data_file, fit_range, components_list, comp_constraints, comp_names, comp_groups=None, group_names=None,
-        data_color='black', fit_color='red', init_fit_color='green', comp_colors=['blue', 'red'], plot_init_fit=True,
-        fit_ssb=True, ssb_list=[], mas_freq=60000,
-        show_lgd=True, lgd_loc=0, lgd_fsize=22):
+def fit_T2(L1_data, intensity_data, spin_rate, labels=None, normalize=False):
+    """
+    DESCRIPTION:  Given rotor delay and intensity data for a T2 experiment, extract out the T2 time constant in ms
+    PARAMETERS:  
+        L1: array of arrays
+            List of of rotor delay data each acquistion was run at, for each resonance, i.e. [L1_para, L1_dia],
+            where L1_para = [1,2,3,4,5,6,7,8,10,20,30,40,50,60,70,80]
+        intensity: array of arrays
+            List of the intensity values extracted from an environment after fitting the spectra, for each resonance
+        spin_rate: integer
+            The MAS spin rate of the rotor, in Hz
+    RETURNS: float
+        The T2 constant, in milliseconds
+    """
+    plt, ax = format_plot(
+        fig_size=(8,8),
+    )
+    colors= ['red', 'blue', 'green']
+    extracted_intensities = []
+    initial_intensities = []
+    label_list = []
+    T2_list = []
+    print('L1_data: {}'.format(L1_data))
+    print('intensity_data: {}'.format(intensity_data))
+    print('labels: {}'.format(labels))
+    for i in range(len(L1_data)):
+        L1 = np.array(L1_data[i])
+        intensity = np.array(intensity_data[i])
+        if normalize:
+            intensity = intensity / intensity[0]
+        initial_intensities.append(intensity[0])
+        # converting L1 to delay time, in milliseconds
+        time = 2/spin_rate*L1*1000
+        popt, pcov = curve_fit(T2_decay_func, time, intensity, p0=[time[0], intensity[0]])
+        T2 = popt[0]
+        init_intensity = popt[1]
+        std_dev = np.sqrt(np.diag(pcov))
+        T2_std_dev = std_dev[0]
+        init_intensity_std_dev = std_dev[1]
+        extracted_intensities.append(init_intensity)
+        T2_list.append(T2)
+        if not labels:
+            label = 'Feature {}'.format(i)
+        else:
+            label = labels[i]
+        label_list.append(label)
+        print('-----------------------------------------------')
+        print(label)
+        print('T2 constant: {} ms'.format(np.round(T2, 4)))
+        print('T2 constant std dev: {}'.format(np.round(T2_std_dev, 4)))
+        print('Initial intensity: {}'.format(np.round(init_intensity, 0)))
+        print('Initial intensity std dev: {}'.format(np.round(init_intensity_std_dev, 0)))
+        plt.plot(time, intensity, 'o', color=colors[i], label=label)
+        plt.plot(time, T2_decay_func(time, T2, init_intensity), '-', color='black')
+    print('-----------------------------------------------')
+    exp_quant = initial_intensities[0]/sum(initial_intensities)*100
+    T2_scaled_quant = extracted_intensities[0]/sum(extracted_intensities)*100
+    diff = exp_quant - T2_scaled_quant
+    print('Experimental {} quantification: {}%'.format(label_list[0], np.round(exp_quant, 3)))
+    print('T2 scaled {} quantification: {}%'.format(label_list[0], np.round(T2_scaled_quant, 3)))
+    plt.xlabel('Time (ms)')
+    if normalize:
+        plt.ylabel('Normalized Intensity (a.u.)')
+    else:
+        plt.ylabel('Intensity (a.u.)')
+    plt.legend(prop={'size': 12}, frameon=False).set_draggable(True)
+    plt.show()
+    plt.close()
+    return T2_list
+
+def T2_decay_func(time, T2, init_intensity):
+    #fit T2 and init_intensity
+    return init_intensity*np.exp(-1*time/T2)
+
+def fit_T2_spectra(data_files, rotor_periods, fit_range, components_list, comp_constraints, comp_names, normalize=False,
+        comp_groups=[], group_names=[],
+        fit_ssb=False, ssb_list=[], mas_freq=60000,
+        print_results=True, show_plot=True, plot_init_fit=True, show_lgd=True, lgd_loc=0, lgd_fsize=22, save_dir='', fig_save_dir='',
+        data_color='black', fit_color='red', init_fit_color='green', comp_colors=['blue', 'red']):
+    amplitudes = []
+    if len(comp_groups) > 0:
+        for i in range(len(comp_groups)):
+            amplitudes.append([])
+    else:
+        for i in len(components_list):
+            amplitudes.append([])
+    for data_file in data_files:
+        freq_ppm_data, intensity_data, model_result, groupless_amplitudes, group_amplitudes= \
+        fit(data_file, fit_range, components_list, comp_constraints, comp_names,
+         comp_groups, group_names,
+        fit_ssb, ssb_list, mas_freq,
+        print_results, show_plot, plot_init_fit, show_lgd, lgd_loc, lgd_fsize, save_dir, fig_save_dir,
+        data_color, fit_color, init_fit_color, comp_colors)
+        if len(comp_groups) > 0:
+            for i in range(len(comp_groups)):
+                amplitudes[i].append(group_amplitudes[i])
+        else:
+            for i in range(len(components_list)):
+                amplitudes[i].append(groupless_amplitudes[i])
+    if len(comp_groups) > 0:
+        rotor_period_data = len(comp_groups)*[rotor_periods]
+        labels = group_names
+    else: 
+        rotor_period_data = len(components_list)*[rotor_periods]
+        labels = comp_names
+    
+    T2_list = fit_T2(rotor_period_data, amplitudes, mas_freq, labels, normalize)
+    return T2_list
+
+def fit(data_file, fit_range, components_list, comp_constraints, comp_names, comp_groups=[], group_names=[],
+        fit_ssb=False, ssb_list=[], mas_freq=60000,
+        print_results=True, show_plot=True, plot_init_fit=True, show_lgd=True, lgd_loc=0, lgd_fsize=22, save_dir='', fig_save_dir='',
+        data_color='black', fit_color='red', init_fit_color='green', comp_colors=['blue', 'red'], 
+        ):
+    """
+    DESCRIPTION: Given NMR frequency and intensity data and a model consisting of pseudo-voigt components, fits the NMR spectra
+    PARAMETERS: 
+        data_file: path-like string
+            The path to the raw .txt file containing intensity, frequency, and ppm NMR data
+        fit_range: array of floats
+            the range to fit the NRM data over, in ppm
+        components_list: array of dictionaries, i.e., [component0, component1, ...], where component0 is a dictionary object
+            A list of psdeuo-voigt components to fit NMR data to. Each componenent is a dictionary in the following format:
+                component0 = 
+                    {'amplitude': 50000,
+                    'center': 6,
+                    'fraction': 1,
+                    'sigma': 12}
+            The dictionary keys must be identical to the keys above, and initial guesses must be provided. 
+            amplitude: the integrated area under the component
+            center: the center of the component, in ppm
+            fraction: the ratio of lorenztian to gaussian for the component. 1 is a pure lorenztian, 0 is a pure gaussian
+            sigma: related to the variance, or fwhm of the component
+            for more details, refer to the following link: https://lmfit.github.io/lmfit-py/builtin_models.html#pseudovoigtmodel
+        comp_constraints: array of dictionaries, i.e., [constraint0, constraint1, ...], where constraint0 is a dictionary object
+            A list of constraints for each pseudo-voigt component, indexed-matched to 'components_list'. Each constraint is a 
+            dictionary in the following format:
+                comp0_constraints = {
+                    'amplitude_vary' : True,
+                    'amplitude_min' : None,
+                    'amplitude_max' : None,
+                    'amplitude_expr' : None,
+                    'center_vary' : True,
+                    'center_min' : None,
+                    'center_max' : None,
+                    'center_expr' : None,
+                    'fraction_vary' : True,
+                    'fraction_min' : None,
+                    'fraction_max' : None,
+                    'fraction_expr' : None,
+                    'sigma_vary' : True,
+                    'sigma_min' : None,
+                    'sigma_max' : None,
+                    'sigma_expr' : None,
+                }
+            The dictionary keys must be identical to the keys above. Not all constraints must be specified; default values
+            (specified in the example above) will be applied. An empty dictionary can be used, but a constraint must always be 
+            specified for a component. For each variable (amplitude, center, fraction, sigma), there are four constraints that
+            can be applied. 'vary' indicates whether or not to optimize that variable. 'min' and 'max' provide bounds for the 
+            variable. 'expr' provides a way to define mathematical constraints. For example, the relative ratio of amplitudes of
+            two components (comp_0 and comp_1) can be set as such:
+                    component0 = 
+                    {'amplitude': 50000,
+                    'center': 6,
+                    'fraction': 1,
+                    'sigma': 12}
+                    component1 = 
+                    {'amplitude': 50000,
+                    'center': 6,
+                    'fraction': 1,
+                    'sigma': 12}
+                    components_list = [component0, component1]
+                    comp_names = ['p1', 'p2']
+                    comp0_constraints = {
+                        amplitude_expr' : '2*p1_amplitude',
+                    }
+                    comp1_constrains = {}
+                    comp_constraints = [comp0_constraints, comp1_constraints]
+        comp_names: array of strings
+            Names assigned to each of the components, index-matched with components_list. Used in labels for plots, 
+            and also as variable names to be used in 'expr' constraints (see above). Must not contain mathematical symbols
+            such as '-, +, sin, etc...'
+        comp_groups: nested array, i.e., [group1, group2], where group1 = [comp1, comp2, comp3] and group2 = [comp4, comp5]
+            Optional. Grouping of several or all components defined in comp_names. Useful for associating several components which 
+            describe the same environment together. Amplitude calculations and plot labels and colors will use these groupings.
+            Each component must be a string that is listed in comp_names.
+        group_names: array of strings, where len(group_names) = len(comp_names)
+            Names to define for each grouping of components defined in comp_groups
+        fit_ssb: boolean
+            Whether or not to enable spinning side band fitting
+        ssb_list: array of integers
+            An list of spinning sideband indices to include in the fitting. [1, -1] indicates two spinning side bands, 
+            one on either side of the isotropic peaks, spaced by 1*mas_freq
+        mas_freq: integer
+            The MAS spinning speed, in Hz.
+        data_color: string
+            Color to plot the NMR data with
+        fit_color: string
+            Color to plot the final fit with
+        init_fit_color: string
+            Color to plot the initial fit with
+        comp_colors: array of strings, with length = len(comp_groups)
+            Color to plot for each group of components
+        show_plot: boolean
+            Whether or not to show the plot
+        plot_init_fit: boolean
+            Whether or not to plot the initial fit
+        show_lgd: boolean
+            Whether or not to show the legend
+        lgd_loc: int or string
+            location of legend
+        lgd_fsize: int
+            font size of the legend
+        save_name: string
+            file name to save figure as
+    RETURNS: [freq_ppm_data, intensity_data, model_result]
+        freq_ppm_data: numpy array
+            a numpy array containing frequency data in freq_ppm
+        intensity_data: numpy array
+            a numpy array containing intensity data
+        model_result: lmfit.model.ModelResult class
+            results of the fit, contained in a ModelResult object: https://lmfit.github.io/lmfit-py/model.html#lmfit.model.ModelResult
+    """    
     # get NMR data
     intensity, freq_Hz, freq_ppm, larmor_freq = simple_parse_data(data_file)
+    base_file_name = os.path.splitext(os.path.basename(data_file))[0].replace('.txt', '')
     # checking inputs
     if len(components_list) != len(comp_constraints):
         raise ValueError("Number of component constraints ({}) is not equal to the number of components ({})"\
@@ -233,19 +469,16 @@ def fit(data_file, fit_range, components_list, comp_constraints, comp_names, com
     # fit components to data
     out = model.fit(y, pars, x=x)
     # print fitting results
-    print(out.fit_report(min_correl=0.5))
+    if print_results:
+        print(out.fit_report(min_correl=0.5))
     comps = out.eval_components(x=x)
     # print(out.best_values)
-    x= x[::-1]
-    plt.plot(x, y[::-1], color=data_color, label='data')
-    plt.plot(x, out.best_fit[::-1], '-', label='fit', color=fit_color, linewidth=1)
-    if plot_init_fit:
-        plt.plot(x, init[::-1], '--', label='init fit', color=init_fit_color)
     # print fitting results as dictionary objects
-    print_fit_vals(out, comp_names)
+    if print_results:
+        print_fit_vals(out, comp_names)
     # generate summary of fits
-    generate_summary(out, comp_names, comp_groups, group_names, fit_ssb, ssb_list, ssb_comp_names)
-
+    groupless_amplitudes, group_amplitudes = generate_summary(out, comp_names, comp_groups, group_names, 
+    ssb_comp_names, save_dir, base_file_name)
     
     # logic to deal with grouping components
     comp_group_index = []
@@ -282,10 +515,13 @@ def fit(data_file, fit_range, components_list, comp_constraints, comp_names, com
             else:
                 ssb_colors.append(default_colors[color_index])
                 color_index += 1
-    # print(comp_group_index)
-    # print(colors)
-    # plot data, fits, and components
 
+    # plot data, fits, and components
+    x= x[::-1]
+    plt.plot(x, y[::-1], color=data_color, label='data')
+    plt.plot(x, out.best_fit[::-1], '-', label='fit', color=fit_color, linewidth=1)
+    if plot_init_fit:
+        plt.plot(x, init[::-1], '--', label='init fit', color=init_fit_color)
     for i, comp_name in enumerate(comp_names):
         # print(comp_name+'_')
         plt.plot(x, comps[comp_name+'_'][::-1], '--', label=comp_labels[i], color=colors[i])
@@ -300,35 +536,80 @@ def fit(data_file, fit_range, components_list, comp_constraints, comp_names, com
         # for line in lgnd.get_lines():
         #     line.set_linewidth(2)
         lgnd.set_draggable(True)
-    plt.show()
+    plt.savefig(fig_save_dir + base_file_name + '-fit' + '.png')
+    if show_plot:
+        plt.show()
+    plt.close()
+    return [x, y[::-1], out, groupless_amplitudes, group_amplitudes]
 
 comp0=\
-{'amplitude': 175945691513.5195,
- 'center': 500.173691,
- 'fraction': 0.25937517,
- 'sigma': 239.5564594157353}
+{'amplitude': 151910259215.00024,
+ 'center': 539.5482608907266,
+ 'fraction': 0,
+ 'sigma': 277.5118927346888}
 comp1=\
-{'amplitude': 267854355812.6343,
- 'center': 275.140072,
- 'fraction': 0.00012542,
- 'sigma': 156.9640161234177}
+{'amplitude': 62417386681.81559,
+ 'center': 12.51282874035798,
+ 'fraction': 0,
+ 'sigma': 61.861344841764115}
 comp2=\
-{'amplitude': 220460472222.7904,
- 'center': 131.872497,
- 'fraction': 0.04651641,
- 'sigma': 110.4590220133286}
+{'amplitude': 112086134201.37619,
+ 'center': 126.54727763554516,
+ 'fraction': 0,
+ 'sigma': 108.83240745791412}
 comp3=\
-{'amplitude': 143296226890.10104,
- 'center': 28.0754571,
- 'fraction': 0.07565613,
- 'sigma': 72.99218373146846}
+{'amplitude': 158944615572.8093,
+ 'center': 283.3889445848811,
+ 'fraction': 0,
+ 'sigma': 166.61320148264875}
 comp4=\
-{'amplitude': 51231276645.67333,
- 'center': 6.45267436,
- 'fraction': 0.99995192,
- 'sigma': 12.130313897866142}
-
+{'amplitude': 50360438443.19048,
+ 'center': 3.314449828271331,
+ 'fraction': 0.9588080837629687,
+ 'sigma': 9.199463910563093}
 comp0_constraints = {
+    'amplitude_vary' : True,
+    'amplitude_min' : 0,
+    'amplitude_max' : None,
+    'amplitude_expr' : None,
+    'center_vary' : False,
+    'center_min' : None,
+    'center_max' : None,
+    'center_expr' : None,
+    'fraction_vary' : False,
+    'fraction_min' : None,
+    'fraction_max' : None,
+    'fraction_expr' : None,
+    'sigma_vary' : False,
+    'sigma_min' : None,
+    'sigma_max' : None,
+    'sigma_expr' : None,
+}
+comp1_constraints = {
+    'amplitude_vary' : False,
+    'amplitude_min' : None,
+    'amplitude_max' : None,
+    'amplitude_expr' : None,
+    'center_vary' : False,
+    'fraction_vary' : False,
+}
+comp2_constraints = {
+    'amplitude_vary' : False,
+    'amplitude_min' : None,
+    'amplitude_max' : None,
+    'amplitude_expr' : None,
+    'center_vary' : False,
+    'fraction_vary' : False,
+}
+comp3_constraints = {
+    'amplitude_vary' : True,
+    'amplitude_min' : None,
+    'amplitude_max' : None,
+    'amplitude_expr' : None,
+    'center_vary' : False,
+    'fraction_vary' : False,
+}
+comp4_constraints = {
     'amplitude_vary' : True,
     'amplitude_min' : None,
     'amplitude_max' : None,
@@ -341,42 +622,10 @@ comp0_constraints = {
     'fraction_min' : None,
     'fraction_max' : None,
     'fraction_expr' : None,
-    'sigma_vary' : True,
+    'sigma_vary' : False,
     'sigma_min' : None,
     'sigma_max' : None,
     'sigma_expr' : None,
-}
-comp1_constraints = {
-    'amplitude_vary' : True,
-    'amplitude_min' : None,
-    'amplitude_max' : None,
-    'amplitude_expr' : None,
-    'center_vary' : True,
-    'fraction_vary' : True,
-}
-comp2_constraints = {
-    'amplitude_vary' : True,
-    'amplitude_min' : None,
-    'amplitude_max' : None,
-    'amplitude_expr' : None,
-    'center_vary' : True,
-    'fraction_vary' : True,
-}
-comp3_constraints = {
-    'amplitude_vary' : True,
-    'amplitude_min' : None,
-    'amplitude_max' : None,
-    'amplitude_expr' : None,
-    'center_vary' : True,
-    'fraction_vary' : True,
-}
-comp4_constraints = {
-    'amplitude_vary' : True,
-    'amplitude_min' : None,
-    'amplitude_max' : None,
-    'amplitude_expr' : None,
-    'center_vary' : True,
-    'fraction_vary' : True,
 }
 
 comp_names = ['p1', 'p2', 'p3', 'p4', 'd1']
@@ -385,18 +634,62 @@ dia_comps = ['d1']
 comp_groups = [para_comps, dia_comps]
 group_names = ['paramagnetic', 'diamagnetic']
 components = [comp0, comp1, comp2, comp3, comp4]
-constraints = [comp0_constraints, comp0_constraints, comp0_constraints, comp0_constraints, comp0_constraints]
-fit(
-    data_file=data_dir+'MnTi-B10-S13-7Li-d1-20ms.txt',
+constraints = [comp0_constraints, comp0_constraints, comp0_constraints, comp0_constraints, comp4_constraints]
+
+rotor_periods = [1,2,3,4,5,6,7,8,10,20,30,40,50,60,70,80]
+files = ['{}MnTiF0.1-B03-S01-7Li-T2-{}.txt'.format(data_dir, x) for x in rotor_periods]
+fit_T2_spectra(
+    data_files=files,
+    rotor_periods=rotor_periods,
+    normalize=True,
     fit_range=(4000, -4000),
     components_list=components,
     comp_constraints=constraints,
     comp_names=comp_names,
     comp_groups = comp_groups,
     group_names = group_names,
-    comp_colors=['blue', 'red'],
     fit_ssb=True,
-    ssb_list=[1, -1],
+    ssb_list=[2, 1, -1, -2],
     mas_freq=60000,
-    plot_init_fit=True
-    )
+    plot_init_fit=True,
+    comp_colors=['blue', 'red'],
+    save_dir=save_dir,
+    fig_save_dir=fig_save_dir,
+    show_plot=False,
+    print_results=False
+)
+# for file in files:
+#     fit(
+#         data_file=file,
+#         fit_range=(4000, -4000),
+#         components_list=components,
+#         comp_constraints=constraints,
+#         comp_names=comp_names,
+#         comp_groups = comp_groups,
+#         group_names = group_names,
+#         fit_ssb=True,   
+#         ssb_list=[2, 1, -1, -2],
+#         mas_freq=60000,
+#         plot_init_fit=True,
+#         comp_colors=['blue', 'red'],
+#         save_dir=save_dir,
+#         fig_save_dir=fig_save_dir,
+#         show_plot=False,
+#         print_results=False
+#     )
+# fit(
+#     data_file=files[1],
+#     fit_range=(4000, -4000),
+#     components_list=components,
+#     comp_constraints=constraints,
+#     comp_names=comp_names,
+#     comp_groups = comp_groups,
+#     group_names = group_names,
+#     fit_ssb=True,
+#     ssb_list=[2, 1, -1, -2],
+#     mas_freq=60000,
+#     plot_init_fit=True,
+#     comp_colors=['blue', 'red'],
+#     save_dir=save_dir,
+#     fig_save_dir=fig_save_dir
+#     )
