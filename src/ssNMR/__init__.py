@@ -1,1 +1,0 @@
-from fitNMR import fit, fit_T2, fit_T2_spectra
